@@ -35,5 +35,9 @@ public class Pembelian {
     private String mataUang;
     private String metodePembayaran;
     private Detail detail;
+
+    public String getKategori() {
+        return detail.getKategori();
+    }
 }
 
