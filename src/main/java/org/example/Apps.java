@@ -28,8 +28,11 @@ import java.math.BigDecimal;
 import java.sql.*;
 import java.util.Objects;
 
+import static org.example.jobs.DatastreamJobs.createFraudAggregationTable;
+import static org.example.jobs.DatastreamJobs.insertTransferFraud;
 
-public class DatastreamJobs {
+
+public class Apps {
 
     private static final String jdbcUrl = "jdbc:postgresql://localhost:5432/postgres";
     private static final String username = "postgres";
@@ -90,56 +93,72 @@ public class DatastreamJobs {
                 getInsertQuery("transfer", new String[]{"IDTransaksi", "tanggal", "jenis", "jumlah", "mataUang", "namaPengirim", "nomorRekeningPengirim", "namaPenerima", "nomorRekeningPenerima"}),
                 jdbcExecutionOptions, jdbcConnectionOptions);
 
-        // insert aggregate sink
+        // insert aggregate pembelian
         addPembelianByKategoriSinkWithoutState(transactionStream, jdbcExecutionOptions, jdbcConnectionOptions);
 
+        // add fraud aggregation
+        createFraudAggregationTable(transactionStream, jdbcExecutionOptions, jdbcConnectionOptions);
+        insertTransferFraud(transactionStream, jdbcExecutionOptions, jdbcConnectionOptions);
+
         // sink to elastic search
+        //addElasticSearchSink(transactionStream);
+
+        env.execute("Flink Ecommerce Realtime Streaming");
+    }
+
+
+
+    private static IndexRequest createIndexRequest(Object element) {
+        if (element instanceof Pembelian) {
+            Pembelian pembelian = (Pembelian) element;
+            return new IndexRequest("pembelian")
+                    .id(pembelian.getIDTransaksi())
+                    .source("kategori", pembelian.getDetail().getKategori(),
+                            "jumlah", pembelian.getJumlah(),
+                            "tanggal", pembelian.getTanggal(),
+                            "jenis", pembelian.getJenis(),
+                            "mataUang", pembelian.getMataUang(),
+                            "metodePembayaran", pembelian.getMetodePembayaran(),
+                            "namaPedagang", pembelian.getDetail().getNamaPedagang(),
+                            "deskripsi", pembelian.getDetail().getDeskripsi());
+        } else if (element instanceof Tagihan) {
+            Tagihan tagihan = (Tagihan) element;
+            return new IndexRequest("tagihan")
+                    .id(tagihan.getIDTransaksi())
+                    .source("penyediaJasa", tagihan.getPenyediaJasa(),
+                            "jumlah", tagihan.getJumlah(),
+                            "tanggal", tagihan.getTanggal(),
+                            "jenis", tagihan.getJenis(),
+                            "mataUang", tagihan.getMataUang(),
+                            "nomorPelanggan", tagihan.getNomorPelanggan(),
+                            "periodeTagihan", tagihan.getPeriodeTagihan());
+        } else if (element instanceof Transfer) {
+            Transfer transfer = (Transfer) element;
+            return new IndexRequest("transfer")
+                    .id(transfer.getIDTransaksi())
+                    .source("namaPengirim", transfer.getPengirim().getNama(),
+                            "nomorRekeningPengirim", transfer.getPengirim().getNomorRekening(),
+                            "namaPenerima", transfer.getPenerima().getNama(),
+                            "nomorRekeningPenerima", transfer.getPenerima().getNomorRekening(),
+                            "jumlah", transfer.getJumlah(),
+                            "tanggal", transfer.getTanggal(),
+                            "jenis", transfer.getJenis(),
+                            "mataUang", transfer.getMataUang());
+        }
+        return null;
+    }
+
+    private static void addElasticSearchSink(DataStream<Object> transactionStream) {
         transactionStream.sinkTo(
                 new Elasticsearch7SinkBuilder<Object>()
                         .setHosts(new HttpHost("localhost", 9200, "http"))
                         .setEmitter((element, context, indexer) -> {
-                    if (element instanceof Pembelian) {
-                        Pembelian pembelian = (Pembelian) element;
-                        IndexRequest request = new IndexRequest("pembelian")
-                                .id(pembelian.getIDTransaksi())
-                                .source("kategori", pembelian.getDetail().getKategori(),
-                                        "jumlah", pembelian.getJumlah(),
-                                        "tanggal", pembelian.getTanggal(),
-                                        "jenis", pembelian.getJenis(),
-                                        "mataUang", pembelian.getMataUang(),
-                                        "metodePembayaran", pembelian.getMetodePembayaran(),
-                                        "namaPedagang", pembelian.getDetail().getNamaPedagang(),
-                                        "deskripsi", pembelian.getDetail().getDeskripsi());
-                        indexer.add(request);
-                    } else if (element instanceof Tagihan) {
-                        Tagihan tagihan = (Tagihan) element;
-                        IndexRequest request = new IndexRequest("tagihan")
-                                .id(tagihan.getIDTransaksi())
-                                .source("penyediaJasa", tagihan.getPenyediaJasa(),
-                                        "jumlah", tagihan.getJumlah(),
-                                        "tanggal", tagihan.getTanggal(),
-                                        "jenis", tagihan.getJenis(),
-                                        "mataUang", tagihan.getMataUang(),
-                                        "nomorPelanggan", tagihan.getNomorPelanggan(),
-                                        "periodeTagihan", tagihan.getPeriodeTagihan());
-                        indexer.add(request);
-                    } else if (element instanceof Transfer) {
-                        Transfer transfer = (Transfer) element;
-                        IndexRequest request = new IndexRequest("transfer")
-                                .id(transfer.getIDTransaksi())
-                                .source("namaPengirim", transfer.getPengirim().getNama(),
-                                        "nomorRekeningPengirim", transfer.getPengirim().getNomorRekening(),
-                                        "namaPenerima", transfer.getPenerima().getNama(),
-                                        "nomorRekeningPenerima", transfer.getPenerima().getNomorRekening(),
-                                        "jumlah", transfer.getJumlah(),
-                                        "tanggal", transfer.getTanggal(),
-                                        "jenis", transfer.getJenis(),
-                                        "mataUang", transfer.getMataUang());
-                        indexer.add(request);
-                    }
-                }).build()).name("Elasticsearch Sink");
-
-        env.execute("Flink Ecommerce Realtime Streaming");
+                            IndexRequest request = createIndexRequest(element);
+                            if (request != null) {
+                                indexer.add(request);
+                            }
+                        }).build()
+        ).name("Elasticsearch Sink");
     }
 
     private static void createTotalPembelianBasedOnKategori(DataStream<Object> transactionStream, JdbcExecutionOptions jdbcExeOpt, JdbcConnectionOptions jdbcConnOpt) {
